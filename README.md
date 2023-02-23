@@ -1,13 +1,11 @@
 # optEnvelope
-## 1. Initialize cobra toolbox
+## 1. Initialize cobra toolbox and set solver
 initCobraToolbox(false)
+changeCobraSolver('gurobi','all',0)
 
-## 2. example
-To run optEnvelope test example with e.coli model iJR904 run main.m
+## 2. Load model and set desired product
+load('iJR904.mat')
+desiredProduct='EX_ac_e';
 
-## 3. optEnvelope for custom model
-To run optEnvelope with your own model change main.m <br />
-a) Change model <br />
-b) Describe biomass <br />
-c) Describe target product <br />
-d) run main.m
+## 3. Run optEnvelope
+[knockouts, midknockouts] = optEnvelope(iJR904, desiredProduct,'timeLimit', 600);
