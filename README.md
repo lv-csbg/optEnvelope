@@ -1,4 +1,7 @@
 # optEnvelope
+
+## Requires Cobra Toolbox and gurobi solver
+
 ## 1. Initialize cobra toolbox and set solver
 initCobraToolbox(false) <br />
 changeCobraSolver('gurobi','all',0)
