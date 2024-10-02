@@ -1,75 +1,107 @@
-function [knockouts] = sequentialOEReinserts(model, values, biomass, controlFlux1, desiredProduct, matchRev, K, model1, timeLimit)
+function [mainKnockouts, finalMidKnockouts] = sequentialOEReinserts(modelOld, data, K, toDel, minP, midPoints, numTries, timeLimit)
+% Calculates knockouts from set of inactive reactions. Uses sequential method.
 
-a=0;
-MILP = struct([]);
-var = [];
-modelOld = model;
-allActive = zeros(numel(model.rxns),length(values));
-allModels = {};
-for i = 1:length(values)
-    a=a+1;
-    model = modelOld;
-    model=changeRxnBounds(model,biomass,controlFlux1(values(a)),'b');
-    s=optimizeCbModel(model);
-    model=changeRxnBounds(model,desiredProduct,s.f,'b');
-    tic
-    [ActiveRxns, var, MILP]=minActiveRxns(model,matchRev,K, var, MILP, timeLimit);
-    T = toc;
-    test(1,i) = values(i);
-    test(2,i) = T;
-    test(3,i) = numel(ActiveRxns);
-    if isempty(ActiveRxns)
-        continue;
-    end
-    ids = findRxnIDs(model,ActiveRxns);
-    allActive(1:length(ids),i) = ids;
-    allActive(~any(allActive,2),:) = [];
-    allActive(:,~any(allActive,1)) = [];
-    allModels = [allModels;model];
-end
+switch toDel
+    case 0  %Reactions
+        rxns = data.mainActive;
+        rxns = ismember(modelOld.rxns, [modelOld.rxns(K); rxns]);
 
-allKnockouts = {};
-[~,col] = size(allActive);
-bestPoint = 0;
-
-for j = 1:col
-    model = allModels{j};
-    rxns = allActive(:,j);
-    rxns(rxns==0)=[];
-    rxns = ismember(model.rxns,[model.rxns(K);model.rxns(rxns)]);
-    model.ub(rxns==0)=0;
-    model=changeRxnBounds(model,desiredProduct,1000,'u');
-    model=changeRxnBounds(model,desiredProduct,0,'l');
-    model=changeRxnBounds(model,biomass,0,'b');
-    s= optimizeCbModel(model,'min');MinB1=s.f;
-    model=changeRxnBounds(model,biomass,1000,'u');
-    model=changeRxnBounds(model,biomass,0,'l');
-    model2=model;n1=0;
-    knockouts = {};
-    
-    % 3. Reduce the number of knockouts to minimum possible
-    for i=1:numel(model.rxns)
-        if ismember(i,find(rxns))==0
-            model.lb(i)=model1.lb(i);
-            model.ub(i)=model1.ub(i);
-            solMin2 = optimizeCbModel(model,'min');
-            if MinB1 - solMin2.f>10^-6
-                model.ub(i)=model2.ub(i);model.lb(i)=model2.lb(i);
-                n1=n1+1;knockouts(n1,1)=model.rxns(i);
+        %adds numTries 
+        idx = linspace(1, numel(data.mainModel.rxns), numel(data.mainModel.rxns));
+        if ~isempty(numTries)
+            for i = 1:numTries
+                randIdx = randperm(length(idx));
+                idx(i + 1, :) = randIdx;
             end
         end
-    end
-    allKnockouts{j} = knockouts;
-    if isempty(knockouts) 
-        continue;
-    elseif bestPoint == 0
-        bestPoint = j;
-    elseif length(allKnockouts{bestPoint})>length(knockouts)
-        bestPoint = j;
-    end
-end
-if bestPoint==0
-    knockouts = [];
-else
-knockouts = allKnockouts{bestPoint};
+        
+        finalKOs = {};
+        
+        tic
+        for j = 1:size(idx, 1)
+            idxi = idx(j, :);
+            model = data.mainModel;
+            model = changeRxnBounds(model, model.rxns(minP.bioID), 0, 'b');
+            model = changeObjective(model, model.rxns(minP.proID));
+            MinB1 = optimizeCbModel(model, 'min');
+            MinB1 = MinB1.f;
+            model2 = data.mainModel;
+            
+            mainKnockouts = {}; n1 = 0;
+            for i = 1:numel(model.rxns)
+                if ismember(idxi(i), find(rxns)) == 0 %model.lb(idx(i)) == 0 && model.ub(idx(i)) == 0 %
+                    model.lb(idxi(i)) = modelOld.lb(idxi(i));
+                    model.ub(idxi(i)) = modelOld.ub(idxi(i));
+                    solMin2 = optimizeCbModel(model, 'min');
+                    if MinB1 - solMin2.f > 10^-6
+                        model.ub(idxi(i)) = model2.ub(idxi(i)); model.lb(idxi(i)) = model2.lb(idxi(i));
+                        n1 = n1 + 1; mainKnockouts(n1, 1) = model.rxns(idxi(i));
+                    end
+                end
+            end
+            if isempty(finalKOs) || length(mainKnockouts) < length(finalKOs)
+                finalKOs = mainKnockouts;
+            end
+            time = toc;
+            if time > timeLimit
+                disp(['Time limit of ', num2str(timeLimit), 's reached. Completed ', num2str(j), '/', num2str(numTries), ' iterations.'])
+                break;
+            end
+        end
+
+        mainKnockouts = finalKOs;
+        
+        finalMidKnockouts = cell(1, midPoints);
+        if midPoints ~= 0
+            for i = 1:midPoints
+                idx = linspace(1, numel(data.mainModel.rxns), numel(data.mainModel.rxns));
+                rxns = data.active{i};
+                rxns = ismember(modelOld.rxns, [modelOld.rxns(K); rxns]); 
+                for j = 1:size(idx, 1)
+                    idxi = idx(j, :);
+                    model = data.models(i);
+                    model = changeRxnBounds(model, model.rxns(minP.bioID), 0, 'b');
+                    model = changeObjective(model, model.rxns(minP.proID));
+                    MinB1 = optimizeCbModel(model, 'min');
+                    MinB1 = MinB1.f;
+                    model2 = data.models(i);
+
+                    midKnockouts = {}; n1 = 0;
+                    for k = 1:numel(model.rxns)
+                        if ismember(idxi(k), find(rxns))==0
+                            model.lb(idxi(k)) = modelOld.lb(idxi(k));
+                            model.ub(idxi(k)) = modelOld.ub(idxi(k));
+                            solMin = optimizeCbModel(model, 'min');
+                            solMax = optimizeCbModel(model, 'max');
+                            if MinB1 - solMin.f > 10^-6
+                                model.ub(idxi(k)) = model2.ub(idxi(k)); model.lb(idxi(k)) = model2.lb(idxi(k));
+                                n1 = n1 + 1; midKnockouts(n1, 1) = model.rxns(idxi(k));
+                            end
+                        end
+                    end
+                    if isempty(finalMidKnockouts{i}) || length(midKnockouts) < length(finalMidKnockouts{i})
+                        finalMidKnockouts{i} = midKnockouts;
+                    end
+                    time = toc;
+                    if time > timeLimit
+                        break;
+                    end
+                end
+            end
+        else
+            finalMidKnockouts = [];
+        end
+        
+    case 1  %Genes
+        model = buildRxnGeneMat(modelOld);
+        genes = ActiveRxns;
+        genes = ismember(model.genes, genes);
+        genes = ismember(model.genes, model.genes(genes));
+        [model, ~, ~] = deleteModelGenes(model, model.genes(~genes));
+        s = optimizeCbModel(model); MaxB1 = s.f;
+        
+        mainKnockouts = model.genes(genes);
+        mainKnockouts = erase(mainKnockouts, '_deleted');
+    case 2
+        %Enzymes
 end
